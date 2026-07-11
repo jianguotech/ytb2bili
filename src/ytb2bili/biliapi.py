@@ -200,3 +200,48 @@ def partitions(cookies_file: str | Path) -> list[dict]:
 
 def valid_tids(cookies_file: str | Path) -> dict[int, dict]:
     return {p["tid"]: p for p in partitions(cookies_file)}
+
+
+def recent_archives(cookies_file: str | Path, n: int = 10) -> list[dict]:
+    """列出账号最近的稿件（含审核中/转码中），用于确认投稿结果、取 bvid。"""
+    hdr = cookie_header(cookies_file)
+    r = _get(
+        "https://member.bilibili.com/x/web/archives?status=is_pubing,pubed,not_pubed"
+        f"&pn=1&ps={n}", hdr
+    )
+    if r.get("code") != 0:
+        raise Ytb2biliError("archives_failed", f"获取稿件列表失败: {r.get('message')}", raw=r)
+    out = []
+    for v in r.get("data", {}).get("arc_audits", []):
+        a = v.get("Archive", {})
+        out.append({
+            "bvid": a.get("bvid"), "aid": a.get("aid"), "title": a.get("title"),
+            "state": a.get("state"), "state_desc": a.get("state_desc"), "ptime": a.get("ptime"),
+        })
+    return out
+
+
+def find_archive_by_title(cookies_file: str | Path, title: str) -> dict | None:
+    """按标题在最近稿件里找匹配项（投稿后确认用）。"""
+    try:
+        for a in recent_archives(cookies_file, 15):
+            if a.get("title") == title:
+                return a
+    except Ytb2biliError:
+        return None
+    return None
+
+
+def delete_archive(cookies_file: str | Path, aid: int) -> dict:
+    """删除稿件（谨慎）。返回接口响应。"""
+    ck = load_cookies(cookies_file)
+    cookies = {c["name"]: c["value"] for c in ck.get("cookie_info", {}).get("cookies", [])}
+    csrf = cookies.get("bili_jct", "")
+    hdr = cookie_header(cookies_file)
+    data = urllib.parse.urlencode({"aid": str(aid), "csrf": csrf}).encode()
+    req = urllib.request.Request(
+        "https://member.bilibili.com/x/vu/web/delete",
+        data=data, headers={"User-Agent": _UA, "Cookie": hdr,
+                            "Content-Type": "application/x-www-form-urlencoded"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)

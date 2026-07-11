@@ -107,11 +107,19 @@ def upload(
     aid = _extract(combined, r'"aid":\s*(?:Number\()?(\d+)')
 
     if not bvid:
-        raise Ytb2biliError(
-            "upload_no_bvid",
-            "biliup 未返回 bvid，可能投稿失败或接口变动。请检查 B 站登录态（ytb2bili whoami）与网络。",
-            output=(combined.strip() or "(biliup 无任何输出)")[-1500:],
-        )
+        # biliup 在部分平台（Windows）经管道捕获时不写日志，但投稿其实已成功。
+        # 退出码为 0 时，用 B 站 API 按标题确认最新稿件，取回 bvid，避免假失败/重复投稿。
+        found = biliapi.find_archive_by_title(cfg.cookies_file, title)
+        if found and found.get("bvid"):
+            bvid = found["bvid"]
+            aid = str(found.get("aid") or "")
+        else:
+            raise Ytb2biliError(
+                "upload_no_bvid",
+                "biliup 未返回 bvid，且 B 站最近稿件中未找到同名视频，投稿可能失败。"
+                "请稍后用 ytb2bili whoami / status 核对。",
+                output=(combined.strip() or "(biliup 无任何输出)")[-1500:],
+            )
 
     return {
         "bvid": bvid,
