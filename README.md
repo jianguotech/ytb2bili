@@ -101,6 +101,28 @@ ytb2bili --json transfer "https://youtu.be/XXXX" --tid 17
 `login --json` 特殊：流式 NDJSON——先输出一行 `{"event":"qrcode","qr_png":...,"qr_url":...}`，
 用户扫码期间输出 `{"event":"status","status":"scanned"}`，最后输出登录结果。
 
+## 错误码与自愈
+
+失败时 `error.code` 是稳定标识，`error.message` 是中文说明，`error.hint` 是可执行建议；
+人读模式下同样会打印「✗ [code] 说明 → 建议」。工具会先自愈（重试 / 换 player_client /
+投稿后查 API 确认），救不了才报下面的错误码：
+
+| error.code | 含义 | 该怎么办（hint） |
+|------------|------|------------------|
+| `youtube_bot_check` | 出口 IP 被 YouTube 判定为机器人/限流 | 加 `--proxy` 换出口 IP，或稍后重试 |
+| `youtube_network_timeout` | 连不上 YouTube（无网络/没走代理） | 检查网络，加 `--proxy` 或设 `HTTP_PROXY` |
+| `youtube_format_unavailable` | 拿不到视频格式（JS 挑战未解） | `doctor --install` 装 deno；工具会自动换 client 重试 |
+| `youtube_age_restricted` | 年龄限制视频 | `export-cookies` 用已登录账号 cookie |
+| `youtube_unavailable` | 私有/已删除/地区限制 | 确认链接；地区限制可 `--proxy` 换区 |
+| `invalid_tid` | 分区号无效（B 站改版） | 用 `tid-list` 选有效分区（错误里附可选项） |
+| `missing_source` | 转载稿件没给来源链接 | 补 `--source` |
+| `not_logged_in` / `cookie_invalid` | 未登录 / B 站 cookie 失效 | 重新 `ytb2bili login` |
+| `upload_no_bvid` | 投稿后既无输出也查不到同名稿件 | 用 `whoami` / `status` 核对后重试 |
+
+退出码：`0` 成功 / `1` 业务失败 / `2` 用法错误——方便脚本判断。
+
+跑前可用 `ytb2bili preflight [url]` 一次性自检：依赖、B 站登录、YouTube 可达性、是否被限流。
+
 ## 命令一览
 
 | 命令 | 说明 |
