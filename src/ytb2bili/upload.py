@@ -92,7 +92,8 @@ def upload(
         cmd += ["--dtime", str(dtime)]
 
     try:
-        proc = subprocess.run(cmd, text=True, capture_output=True, check=True)
+        proc = subprocess.run(cmd, text=True, capture_output=True, check=True,
+                              env=deps.subprocess_env_direct())
     except subprocess.CalledProcessError as e:
         raise Ytb2biliError(
             "upload_failed",
@@ -108,8 +109,8 @@ def upload(
     if not bvid:
         raise Ytb2biliError(
             "upload_no_bvid",
-            "biliup 未返回 bvid，可能投稿失败或接口变动",
-            output=combined[-1200:],
+            "biliup 未返回 bvid，可能投稿失败或接口变动。请检查 B 站登录态（ytb2bili whoami）与网络。",
+            output=(combined.strip() or "(biliup 无任何输出)")[-1500:],
         )
 
     return {

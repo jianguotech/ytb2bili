@@ -26,6 +26,8 @@ def _print(result: Result, as_json: bool) -> int:
 def _human(r: Result) -> None:
     if not r.ok and r.error:
         print(f"✗ [{r.error.get('code')}] {r.error.get('message')}", file=sys.stderr)
+        if r.error.get("hint"):
+            print(f"    → 建议: {r.error.get('hint')}", file=sys.stderr)
         avail = r.error.get("available")
         if avail:
             for p in avail:
@@ -70,6 +72,18 @@ def _human(r: Result) -> None:
     elif cmd == "tid-list":
         for p in d.get("partitions", []):
             print(f"{p['tid']:>4}  {p['parent']} → {p['name']}")
+    elif cmd == "preflight":
+        c = d.get("checks", {})
+        print(f"{'✓ 就绪' if d.get('ready') else '✗ 未就绪'}")
+        bl = c.get("bilibili_login", {})
+        print(f"  B站登录 : {'✓ '+str(bl.get('uname')) if bl.get('ok') else '✗ 未登录'}")
+        yt = c.get("youtube", {})
+        print(f"  YouTube : {'✓ 可达' if yt.get('ok') else '✗ '+str(yt.get('code'))}")
+        if not yt.get("ok") and yt.get("hint"):
+            print(f"            → {yt.get('hint')}")
+        dp = c.get("deps", {})
+        print(f"  依赖    : yt-dlp={dp.get('yt_dlp')} biliup={dp.get('biliup')} "
+              f"ffmpeg={dp.get('ffmpeg')} js={dp.get('js_runtime')}")
     elif cmd == "config":
         for k, v in d.items():
             print(f"{k}: {v}")
@@ -130,9 +144,49 @@ def cmd_download(args, cfg) -> Result:
         output_dir=args.output_dir,
         quality=args.quality,
         cookies_from_browser=args.cookies_from_browser,
+        proxy=getattr(args, "proxy", None),
         progress=not args.json,
     )
     return ok("download", **data)
+
+
+def cmd_preflight(args, cfg) -> Result:
+    """跑前预检：一次性返回 B 站登录态、YouTube 可达性、是否被限流、代理是否生效。
+
+    供 agent/脚本在真正搬运前判断环境，避免中途失败。
+    """
+    report = {"ready": False, "checks": {}}
+    # 1) 依赖
+    st = deps.status()
+    report["checks"]["deps"] = {
+        "yt_dlp": st["yt_dlp"]["installed"],
+        "biliup": st["biliup"]["installed"],
+        "ffmpeg": bool(st.get("ffmpeg")),
+        "js_runtime": st.get("js_runtime"),
+    }
+    # 2) B 站登录
+    try:
+        me = biliapi.whoami(cfg.cookies_file)
+        report["checks"]["bilibili_login"] = {"ok": True, "uname": me.get("uname"),
+                                              "mid": me.get("mid")}
+    except Ytb2biliError as e:
+        report["checks"]["bilibili_login"] = {"ok": False, "code": e.code, "hint": "运行 ytb2bili login"}
+    # 3) YouTube cookie 文件
+    yc = getattr(cfg, "youtube_cookies", "") or ""
+    import os
+    report["checks"]["youtube_cookies"] = {"configured": bool(yc), "exists": bool(yc and os.path.exists(os.path.expanduser(yc)))}
+    # 4) YouTube 可达性（用一个已知视频探测，带自愈换 client）
+    probe_url = args.url or "https://www.youtube.com/watch?v=2WJ_4pxB8jc"
+    try:
+        info = dl.probe(probe_url, cfg, proxy=getattr(args, "proxy", None))
+        report["checks"]["youtube"] = {"ok": True, "sample_title": info.get("title")}
+    except Ytb2biliError as e:
+        report["checks"]["youtube"] = {"ok": False, "code": e.code,
+                                       "message": e.message, "hint": e.details.get("hint")}
+    yt_ok = report["checks"]["youtube"].get("ok")
+    bili_ok = report["checks"]["bilibili_login"].get("ok")
+    report["ready"] = bool(yt_ok and bili_ok)
+    return ok("preflight", **report)
 
 
 def cmd_export_cookies(args, cfg) -> Result:
@@ -167,6 +221,7 @@ def cmd_transfer(args, cfg) -> Result:
         output_dir=args.output_dir,
         quality=args.quality,
         cookies_from_browser=args.cookies_from_browser,
+        proxy=getattr(args, "proxy", None),
         progress=not args.json,
     )
     title = args.title or d.get("title") or d["id"]
@@ -210,7 +265,7 @@ def cmd_config(args, cfg) -> Result:
     changed = False
     for key in ("download_dir", "default_tid", "default_copyright",
                 "cookies_from_browser", "youtube_cookies", "quality",
-                "biliup_line", "cookies_file"):
+                "proxy", "biliup_line", "cookies_file"):
         val = getattr(args, key, None)
         if val is not None:
             if key in ("default_tid", "default_copyright", "quality"):
@@ -255,7 +310,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-o", "--output-dir")
     sp.add_argument("-q", "--quality", type=int, help="最高画质高度，默认 1080")
     sp.add_argument("--cookies-from-browser", help="从浏览器读 YouTube cookie，如 chrome")
+    sp.add_argument("--proxy", help="下载走代理，如 http://127.0.0.1:10808")
     sp.set_defaults(func=cmd_download)
+
+    sp = sub.add_parser("preflight", help="跑前预检：依赖/B站登录/YouTube可达/是否被限流")
+    sp.add_argument("url", nargs="?", help="可选：用该视频探测 YouTube 可达性")
+    sp.add_argument("--proxy", help="预检时下载走代理")
+    sp.set_defaults(func=cmd_preflight)
 
     sp = sub.add_parser("upload", help="投稿本地视频到 B 站")
     sp.add_argument("video")
@@ -280,6 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-o", "--output-dir")
     sp.add_argument("-q", "--quality", type=int)
     sp.add_argument("--cookies-from-browser")
+    sp.add_argument("--proxy", help="下载走代理，如 http://127.0.0.1:10808")
     sp.add_argument("--line")
     sp.add_argument("--submit", default="app", choices=["client", "app", "web"])
     sp.add_argument("--no-check-tid", action="store_true")
@@ -300,6 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cookies-from-browser")
     sp.add_argument("--youtube-cookies")
     sp.add_argument("--quality")
+    sp.add_argument("--proxy")
     sp.add_argument("--biliup-line")
     sp.add_argument("--cookies-file")
     sp.set_defaults(func=cmd_config)

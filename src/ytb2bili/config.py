@@ -49,6 +49,7 @@ class Config:
     cookies_from_browser: str = ""  # 例如 "chrome"、"edge"、"firefox"、"safari"
     youtube_cookies: str = ""  # YouTube cookie 文件(Netscape 格式)，优先于浏览器读取，避免钥匙串弹窗
     quality: int = 1080
+    proxy: str = ""  # yt-dlp 下载用的代理，如 http://127.0.0.1:10808（B 站投稿始终直连）
     biliup_line: str = ""  # 空=自动测速选线；可选 bda2/ws/qn/bldsa/tx/txa/bda/alia
     extra: dict = field(default_factory=dict)
 
@@ -77,6 +78,7 @@ class Config:
             "cookies_from_browser": self.cookies_from_browser,
             "youtube_cookies": self.youtube_cookies,
             "quality": self.quality,
+            "proxy": self.proxy,
             "biliup_line": self.biliup_line,
             **self.extra,
         }
@@ -93,6 +95,7 @@ class Config:
             "cookies_from_browser": self.cookies_from_browser,
             "youtube_cookies": self.youtube_cookies,
             "quality": self.quality,
+            "proxy": self.proxy,
             "biliup_line": self.biliup_line,
             "config_file": str(CONFIG_FILE),
             "data_dir": str(DATA_DIR),

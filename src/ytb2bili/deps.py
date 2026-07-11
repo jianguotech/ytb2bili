@@ -298,6 +298,21 @@ def subprocess_env() -> dict:
     return env
 
 
+def subprocess_env_direct() -> dict:
+    """给 biliup 等「访问国内站、必须直连」的子进程用：在 PATH 注入基础上剥离代理。
+
+    B 站上传走 Clash/系统代理会失败（Windows 实测投稿输出为空），且没有必要——
+    B 站是国内站，直连更快更稳。这里清掉所有代理环境变量。
+    """
+    env = subprocess_env()
+    for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy",
+                "https_proxy", "all_proxy"):
+        env.pop(var, None)
+    env["NO_PROXY"] = "*"
+    env["no_proxy"] = "*"
+    return env
+
+
 def status() -> dict:
     """返回依赖状态字典。"""
     ff = ffmpeg_location()

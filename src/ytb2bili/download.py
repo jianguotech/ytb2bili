@@ -70,19 +70,43 @@ def export_cookies(cfg: Config, browser: str, out_file: str | None = None) -> di
     return {"youtube_cookies": str(dest), "lines": n, "browser": browser}
 
 
-def probe(url: str, cookies_from_browser: str = "") -> dict:
+# 依次尝试的 YouTube player_client；某些客户端更容易绕过 bot 检测/拿到格式
+PLAYER_CLIENTS = ["default", "tv", "web_safari,web", "mweb", "ios"]
+
+# 网络重试相关 flag，提升弱网/抖动下的成功率
+RETRY_FLAGS = [
+    "--retries", "10", "--fragment-retries", "10",
+    "--extractor-retries", "3", "--socket-timeout", "30",
+]
+
+
+def _proxy_args(cfg: Config, proxy: str | None) -> list[str]:
+    p = proxy if proxy is not None else getattr(cfg, "proxy", "") or ""
+    return ["--proxy", p] if p else []
+
+
+def probe(url: str, cfg: Config | None = None, cookies_from_browser: str = "",
+          proxy: str | None = None) -> dict:
     """只取元数据不下载。返回 title/duration/uploader/分辨率/license 等。"""
-    cmd = deps.ytdlp_cmd() + ["--no-warnings", "--dump-single-json", "--no-playlist"] + EJS_FLAGS
-    if cookies_from_browser:
-        cmd += ["--cookies-from-browser", cookies_from_browser]
-    cmd.append(url)
-    try:
-        out = subprocess.check_output(cmd, text=True, stderr=subprocess.PIPE,
-                                      env=deps.subprocess_env())
-    except subprocess.CalledProcessError as e:
-        raise Ytb2biliError("probe_failed", _clean_ytdlp_error(e.stderr), url=url)
-    info = json.loads(out)
-    return _summarize(info)
+    cookie_args = (_youtube_cookie_args(cfg, cookies_from_browser) if cfg
+                   else (["--cookies-from-browser", cookies_from_browser]
+                         if cookies_from_browser else []))
+    proxy_args = _proxy_args(cfg, proxy) if cfg else (["--proxy", proxy] if proxy else [])
+    last_err = None
+    for pc in PLAYER_CLIENTS:
+        cmd = (deps.ytdlp_cmd() + ["--no-warnings", "--dump-single-json", "--no-playlist"]
+               + EJS_FLAGS + RETRY_FLAGS + ["--extractor-args", f"youtube:player_client={pc}"]
+               + cookie_args + proxy_args + [url])
+        try:
+            out = subprocess.check_output(cmd, text=True, stderr=subprocess.PIPE,
+                                          env=deps.subprocess_env())
+            return _summarize(json.loads(out))
+        except subprocess.CalledProcessError as e:
+            code, _, _ = _classify_ytdlp_error(e.stderr)
+            last_err = e.stderr
+            if code not in ("youtube_bot_check", "youtube_format_unavailable"):
+                break  # 换 client 也没用的错误，直接停
+    _raise_ytdlp(last_err, url)
 
 
 def download(
@@ -91,10 +115,12 @@ def download(
     output_dir: str | None = None,
     quality: int | None = None,
     cookies_from_browser: str | None = None,
+    proxy: str | None = None,
     progress: bool = True,
 ) -> dict:
     """下载最高不超过 quality 的画质，合并为 mp4，并抓取封面 + info.json。
 
+    自愈策略：依次尝试多个 player_client；遇到 bot 检测/格式不可用时自动换 client 重试。
     返回 {video, cover, info_json, title, duration, width, height, source_url, id}。
     """
     deps.ensure_ytdlp()
@@ -102,13 +128,14 @@ def download(
     outdir.mkdir(parents=True, exist_ok=True)
     q = quality or cfg.quality
     cookie_args = _youtube_cookie_args(cfg, cookies_from_browser)
+    proxy_args = _proxy_args(cfg, proxy)
 
     fmt = (
         f"bestvideo[height<={q}][ext=mp4]+bestaudio[ext=m4a]/"
         f"bestvideo[height<={q}]+bestaudio/best[height<={q}]/best"
     )
     outtmpl = str(outdir / "%(id)s.%(ext)s")
-    cmd = deps.ytdlp_cmd() + [
+    base = deps.ytdlp_cmd() + [
         "--no-playlist",
         "-f", fmt,
         "--merge-output-format", "mp4",
@@ -117,24 +144,30 @@ def download(
         "--embed-metadata",
         "-o", outtmpl,
         "--print", "after_move:%(id)s",
-    ] + EJS_FLAGS + _ffmpeg_flags() + cookie_args
+    ] + EJS_FLAGS + RETRY_FLAGS + _ffmpeg_flags() + cookie_args + proxy_args
     if not progress:
-        cmd.append("--no-progress")
-    cmd.append(url)
+        base.append("--no-progress")
 
-    try:
-        proc = subprocess.run(
-            cmd, text=True, capture_output=True, check=True, env=deps.subprocess_env()
-        )
-    except subprocess.CalledProcessError as e:
-        raise Ytb2biliError(
-            "download_failed", _clean_ytdlp_error(e.stderr or e.stdout), url=url
-        )
+    last_err = None
+    proc = None
+    for pc in PLAYER_CLIENTS:
+        cmd = base + ["--extractor-args", f"youtube:player_client={pc}", url]
+        try:
+            proc = subprocess.run(cmd, text=True, capture_output=True, check=True,
+                                  env=deps.subprocess_env())
+            break
+        except subprocess.CalledProcessError as e:
+            code, _, _ = _classify_ytdlp_error(e.stderr or e.stdout)
+            last_err = e.stderr or e.stdout
+            if code not in ("youtube_bot_check", "youtube_format_unavailable"):
+                break  # 换 client 无益的错误（如私有/不存在/网络），直接停
+    if proc is None:
+        _raise_ytdlp(last_err, url)
 
     vid = (proc.stdout or "").strip().splitlines()[-1] if proc.stdout.strip() else None
     if not vid:
-        # 回退：从 info.json 找 id
-        raise Ytb2biliError("download_failed", "未能确定下载文件 id", url=url, stderr=proc.stderr[-800:])
+        raise Ytb2biliError("download_failed", "未能确定下载文件 id", url=url,
+                            stderr=(proc.stderr or "")[-800:])
 
     video = outdir / f"{vid}.mp4"
     cover = _first_existing([outdir / f"{vid}.jpg", outdir / f"{vid}.webp", outdir / f"{vid}.png"])
@@ -187,6 +220,36 @@ def _first_existing(paths: list[Path]) -> Path | None:
         if p.exists():
             return p
     return None
+
+
+def _classify_ytdlp_error(stderr: str | None) -> tuple[str, str, str]:
+    """把 yt-dlp 报错归类成稳定错误码 + 中文说明 + 可执行建议(hint)。"""
+    s = (stderr or "").lower()
+    if "sign in to confirm you" in s and "bot" in s:
+        return ("youtube_bot_check",
+                "YouTube 判定为机器人访问（该出口 IP 被临时限流）",
+                "换一个出口 IP：加 --proxy http://host:port 走代理，或稍后重试；也可更新 cookie。")
+    if "confirm your age" in s or "age-restricted" in s or "inappropriate" in s:
+        return ("youtube_age_restricted", "视频有年龄限制，需登录 cookie 才能下载",
+                "用 export-cookies 导出已登录账号的 cookie 再试。")
+    if "private video" in s or "video unavailable" in s or "removed" in s or "not available" in s and "format" not in s:
+        return ("youtube_unavailable", "视频不可用（私有/已删除/地区限制）",
+                "确认链接有效；地区限制可尝试 --proxy 换区。")
+    if "requested format is not available" in s or "only images are available" in s:
+        return ("youtube_format_unavailable", "拿不到视频格式（多为 JS 挑战未解或需换 client）",
+                "确保有 JS 运行时（doctor --install 装 deno）；工具会自动换 player_client 重试。")
+    if "timed out" in s or "timeout" in s or "connection" in s or "unable to download" in s and "api" in s:
+        return ("youtube_network_timeout", "连接 YouTube 超时（网络不通或未走代理）",
+                "检查网络/代理：加 --proxy，或确认 HTTP_PROXY 已设。")
+    if "no such file" in s or "unable to open" in s:
+        return ("local_io_error", "本地文件读写错误", "检查输出目录权限与磁盘空间。")
+    return ("download_failed", _clean_ytdlp_error(stderr), "查看 stderr 细节。")
+
+
+def _raise_ytdlp(stderr: str | None, url: str):
+    code, msg, hint = _classify_ytdlp_error(stderr)
+    raise Ytb2biliError(code, msg, url=url, hint=hint,
+                        stderr=(stderr or "").strip()[-600:])
 
 
 def _clean_ytdlp_error(stderr: str | None) -> str:
