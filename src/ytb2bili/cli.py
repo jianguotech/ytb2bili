@@ -308,6 +308,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    # Windows 控制台默认 GBK，直接打印 ✓ 等字符会 UnicodeEncodeError；统一切到 UTF-8。
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:
+            pass
     parser = build_parser()
     args = parser.parse_args(argv)
     # 允许 --json 放在子命令前或后
