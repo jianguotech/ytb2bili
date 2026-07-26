@@ -151,6 +151,25 @@ ytb2bili --json transfer "https://youtu.be/XXXX" --tid 17
 
 搬运他人视频请确保已获授权或内容为 CC 协议。工具默认以「转载」提交并注明原作者与原链接。
 
+## 与同类项目的区别
+
+GitHub 上有几个 YouTube→B 站搬运项目（diffyz9/ytb2bili 1.6k ⭐、Y2A-Auto 2.2k ⭐、youtube2bilibili 等）,
+它们的共同特点是 **Web 服务(服务器常驻) + 数据库(MySQL/PostgreSQL) + Docker 部署 + AI 增强(翻译/字幕/审核)**。
+面向「频道长期监控 → 全自动搬运流水线」的场景。
+
+ytb2bili 的定位不同：
+
+| | 同类(Web 服务型) | ytb2bili(CLI 工具型) |
+|---|---|---|
+| **运行方式** | Docker / 服务常驻 + 数据库 | `pip install` → 命令行即用 |
+| **前置条件** | MySQL、API Key、环境变量 | Python ≥3.9,`doctor --install` |
+| **适合谁** | 频道主 / 自动化流水线 | 个人 / 脚本 / AI agent |
+| **AI/LLM 参与** | 依赖(翻译/字幕/生成元数据) | 零(确定性执行) |
+| **AI 可调性** | 需对接 Web API | `--json` 一行,结构化错误码 |
+| **部署** | Docker Compose / K8s | `pip install git+…` |
+
+**一句话**:别人解决「怎么让搬运全自动」,ytb2bili 解决「怎么让搬运变得像 `wget` 一样简单、可被任何程序可靠调用」。
+
 ## 常见问题
 
 - **YouTube 报「Sign in to confirm you're not a bot」**：先 `ytb2bili export-cookies --browser chrome`（用已登录浏览器 cookie，导出后不再弹钥匙串）。
